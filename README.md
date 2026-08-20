@@ -4,7 +4,7 @@
 
 > 当前项目处于 beta candidate 阶段，适合受控环境试用和二次开发。正式暴露到公网前，仍需完成密钥轮换、完整安全审计和生产级运维验证。
 
-项目当前没有发布稳定版本，也没有兼容旧版 `r9s-access` 的 `/v1/*` 接口。API 和配置格式可能在 `v0.x` 阶段发生变化。
+项目当前没有发布稳定版本，API 和配置格式可能在 `v0.x` 阶段发生变化。
 
 ## 特性
 
@@ -49,6 +49,82 @@ store/        Redis 与内存存储实现
 identity/     用户和 provider identity 持久化、账号关联
 policy/       授权策略基础类型
 cmd/authd/    服务启动入口
+```
+
+## 认证时序
+
+### 首次登录与统一用户创建
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant B as 浏览器 / 业务应用
+    participant A as auth-center
+    participant P as GitHub / Google
+    participant R as Redis
+
+    B->>A: GET /oauth/authorize
+    A->>A: 校验 client、redirect_uri、PKCE
+    A->>A: 生成签名 state、nonce
+    A-->>B: 302 到 provider 授权页
+    B->>P: 用户授权
+    P-->>A: GET /oauth/callback/{provider}?code&state
+    A->>A: 验证 state 签名
+    A->>P: 交换 authorization code
+    P-->>A: access token / ID Token
+    A->>P: 获取用户资料和 verified email
+    A->>A: provider + subject 查找 identity
+    alt 已有关联身份
+        A->>R: 读取统一用户
+    else verified email 命中已有用户
+        A->>R: 关联新的 provider identity
+    else 新用户
+        A->>R: 创建 user 和 identity
+    end
+    A->>A: 执行 provider、邮箱域、GitHub 组织/团队策略
+    A->>R: 保存一次性 authorization code
+    A-->>B: 302 回业务 redirect_uri
+    B->>A: POST /oauth/token + code_verifier
+    A->>R: 原子消费 authorization code
+    A->>R: 保存 access token 和 refresh token
+    A-->>B: access_token、refresh_token、RS256 ID Token
+    B->>A: GET /userinfo
+    A->>R: 校验 token 和用户状态
+    A-->>B: 统一用户 claims
+```
+
+### Refresh Token 轮换与会话撤销
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as 客户端
+    participant A as auth-center
+    participant R as Redis
+
+    C->>A: POST /oauth/token<br/>grant_type=refresh_token
+    A->>A: 验证 client credentials
+    A->>R: 原子消费旧 refresh token
+    alt token 已使用或 family 已撤销
+        A->>R: 撤销 refresh token family
+        A-->>C: 400 invalid_grant
+    else token 有效
+        A->>R: 标记旧 token 已使用
+        A->>R: 保存新的 access/refresh token
+        A-->>C: 新 token 对
+    end
+
+    C->>A: POST /oauth/revoke
+    A->>A: 验证 client credentials
+    A->>R: 删除指定 access 或 refresh token
+    A-->>C: 200 OK
+
+    C->>A: POST /oauth/session/revoke-all<br/>Bearer access token
+    A->>R: 更新用户 revoked_before
+    A-->>C: 204 No Content
+    C->>A: 后续请求 /userinfo
+    A->>R: 检查 token 签发时间和 revoked_before
+    A-->>C: 401/403
 ```
 
 ## 快速开始
