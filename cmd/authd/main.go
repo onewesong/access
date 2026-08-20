@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"github.com/edgefn/auth-center/config"
 	"github.com/edgefn/auth-center/provider"
 	"github.com/edgefn/auth-center/server"
@@ -27,7 +28,12 @@ func main() {
 		case "github":
 			ps = append(ps, provider.NewGitHub(p.ClientID, p.ClientSecret, cfg.Issuer+"/oauth/callback/"+p.Name))
 		case "google":
-			ps = append(ps, provider.NewGoogle(p.ClientID, p.ClientSecret, cfg.Issuer+"/oauth/callback/"+p.Name))
+			gp, err := provider.NewGoogleOIDC(context.Background(), p.ClientID, p.ClientSecret, cfg.Issuer+"/oauth/callback/"+p.Name)
+			if err != nil {
+				log.Error("google oidc", "error", err)
+				os.Exit(1)
+			}
+			ps = append(ps, gp)
 		}
 	}
 	var st store.Store = store.NewMemory()

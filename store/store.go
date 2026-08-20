@@ -33,15 +33,19 @@ func (m *Memory) Set(_ context.Context, k string, v any, ttl time.Duration) erro
 	if e != nil {
 		return e
 	}
+	exp := time.Time{}
+	if ttl > 0 {
+		exp = time.Now().Add(ttl)
+	}
 	m.mu.Lock()
-	m.m[k] = entry{b, time.Now().Add(ttl)}
+	m.m[k] = entry{b, exp}
 	m.mu.Unlock()
 	return nil
 }
 func (m *Memory) Get(_ context.Context, k string, v any) error {
 	m.mu.Lock()
 	x, ok := m.m[k]
-	if ok && time.Now().After(x.exp) {
+	if ok && !x.exp.IsZero() && time.Now().After(x.exp) {
 		delete(m.m, k)
 		ok = false
 	}
@@ -64,7 +68,7 @@ func (m *Memory) Consume(ctx context.Context, k string, v any) error {
 		delete(m.m, k)
 	}
 	m.mu.Unlock()
-	if !ok || time.Now().After(x.exp) {
+	if !ok || (!x.exp.IsZero() && time.Now().After(x.exp)) {
 		return ErrNotFound
 	}
 	return json.Unmarshal(x.b, v)

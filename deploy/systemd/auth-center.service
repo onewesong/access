@@ -1,0 +1,21 @@
+[Unit]
+Description=auth-center authentication service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=auth-center
+Group=auth-center
+WorkingDirectory=/etc/auth-center
+ExecStart=/usr/local/bin/authd /etc/auth-center/config.yaml
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/auth-center
+
+[Install]
+WantedBy=multi-user.target

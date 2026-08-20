@@ -2,6 +2,7 @@ issuer: http://localhost:8080
 addr: :8080
 cookie_secure: false
 redis_addr: memory
+# signing_keys: [base64-pkcs1-key-1, base64-pkcs1-key-2]
 providers:
   - name: github
     type: github
@@ -17,3 +18,10 @@ clients:
     redirect_uris: [http://localhost:3000/callback]
     scopes: [openid, profile, email]
     require_pkce: true
+    policy: workspace
+policies:
+  workspace:
+    allowed_providers: [github, google]
+    email_domains: [example.com]
+    github_organization: example-org
+    github_team: platform

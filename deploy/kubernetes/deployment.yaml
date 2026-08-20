@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: auth-center
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: auth-center
+  template:
+    metadata:
+      labels:
+        app: auth-center
+    spec:
+      containers:
+        - name: auth-center
+          image: ghcr.io/edgefn/auth-center:latest
+          args: ["/etc/auth-center/config.yaml"]
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet: {path: /readyz, port: http}
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/auth-center
+              readOnly: true
+      volumes:
+        - name: config
+          secret:
+            secretName: auth-center-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: auth-center
+spec:
+  selector:
+    app: auth-center
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

@@ -1,0 +1,21 @@
+# TLS should terminate at the public reverse proxy.
+upstream auth_center {
+    server 127.0.0.1:8080;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name auth.example.com;
+
+    # Configure certificates according to your deployment platform.
+    ssl_certificate     /etc/letsencrypt/live/auth.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/auth.example.com/privkey.pem;
+
+    location / {
+        proxy_pass http://auth_center;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+}
