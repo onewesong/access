@@ -1,0 +1,7 @@
+.git
+.github
+bin
+coverage.out
+*.test
+*.pem
+config.local.yaml

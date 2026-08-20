@@ -339,6 +339,26 @@ CLI 管理工具：
 
 `generate-key` 输出 base64 编码的 PKCS#1 RSA 私钥，可保存到 `signing_key` 或 `signing_keys` 配置中。生产环境应通过 Secret Manager 或 Kubernetes Secret 管理该值。
 
+## 发布
+
+推送 `v*` tag 会自动执行发布工作流：
+
+```bash
+git tag v0.1.0-beta.1
+git push origin v0.1.0-beta.1
+```
+
+GitHub Actions 会：
+
+- 使用 GoReleaser 构建 `authd` 和 `authctl`
+- 生成 Linux、macOS、Windows 的 amd64/arm64 二进制归档
+- 生成 `checksums.txt`
+- 创建 GitHub Release
+- 构建并推送 `linux/amd64`、`linux/arm64` 镜像到 `ghcr.io/<owner>/<repo>`
+- 发布版本、major/minor、`latest` 等镜像 tag
+
+对应配置位于 `.goreleaser.yaml`、`.github/workflows/release.yml` 和 `Dockerfile`。工作流使用仓库内置 `GITHUB_TOKEN`，不需要额外的发布 secret。
+
 ## 贡献指南
 
 欢迎提交 Issue、文档改进和 Pull Request。提交代码前请：

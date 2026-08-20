@@ -11,6 +11,8 @@ import (
 	"os"
 )
 
+var version = "dev"
+
 func main() {
 	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	path := "config.example.yaml"
@@ -40,7 +42,7 @@ func main() {
 	if cfg.RedisAddr != "memory" {
 		st = store.NewRedis(cfg.RedisAddr)
 	}
-	log.Info("auth center started", "addr", cfg.Addr)
+	log.Info("auth center started", "addr", cfg.Addr, "version", version)
 	if e = http.ListenAndServe(cfg.Addr, server.New(cfg, st, ps).Handler()); e != nil {
 		log.Error("server", "error", e)
 	}
