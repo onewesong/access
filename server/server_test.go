@@ -8,8 +8,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"github.com/edgefn/auth-center/config"
+	"github.com/edgefn/auth-center/identity"
 	"github.com/edgefn/auth-center/provider"
 	"github.com/edgefn/auth-center/store"
+	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
@@ -73,5 +75,23 @@ func TestJWKSKeyRing(t *testing.T) {
 	}
 	if json.NewDecoder(w.Body).Decode(&doc) != nil || len(doc.Keys) != 2 {
 		t.Fatalf("expected two JWKS keys: %s", w.Body.String())
+	}
+}
+
+func TestProxyVerify(t *testing.T) {
+	st := store.NewMemory()
+	s := New(config.Config{Issuer: "https://auth.example.com", Clients: []config.Client{{ID: "app", RedirectURIs: []string{"https://app.example.com/__auth/callback"}}}}, st, nil)
+	ctx := context.Background()
+	u := identity.User{ID: "u1", Email: "u@example.com"}
+	_ = st.Set(ctx, "user:u1", u, 0)
+	sid := "session"
+	_ = st.Set(ctx, "proxy-session:"+sid, proxySession{ClientID: "app", UserID: "u1", User: provider.User{Subject: "p1", Email: "u@example.com", Claims: map[string]any{"provider": "github"}}, Exp: time.Now().Add(time.Hour), IssuedAt: time.Now()}, time.Hour)
+	r := httptest.NewRequest("GET", "/oauth/proxy/verify", nil)
+	r.AddCookie(&http.Cookie{Name: "__Host-auth_center_session", Value: sid})
+	r.Header.Set("X-Auth-Client-ID", "app")
+	w := httptest.NewRecorder()
+	s.proxyVerify(w, r)
+	if w.Code != 200 || w.Header().Get("X-Auth-User") != "u1" {
+		t.Fatalf("proxy verify status=%d headers=%v", w.Code, w.Header())
 	}
 }

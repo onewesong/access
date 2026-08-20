@@ -1,0 +1,69 @@
+# Nginx auth_request integration for one-click OIDC login.
+# Replace auth.example.com, app.example.com and the upstream address.
+
+upstream auth_center {
+    server 127.0.0.1:8080;
+}
+
+upstream protected_app {
+    server 127.0.0.1:9000;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name app.example.com;
+
+    # Configure TLS certificates for this site.
+    ssl_certificate     /etc/letsencrypt/live/app.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/app.example.com/privkey.pem;
+
+    set $auth_client_id app;
+
+    location = /__auth/start {
+        proxy_set_header X-Auth-Client-ID $auth_client_id;
+        proxy_set_header X-Auth-Callback-URI https://app.example.com/__auth/callback;
+        proxy_set_header X-Auth-Return-URI $request_uri;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_pass http://auth_center/oauth/proxy/start;
+    }
+
+    location = /__auth/callback {
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_pass http://auth_center/oauth/proxy/complete;
+    }
+
+    location = /__auth/verify {
+        internal;
+        proxy_pass_request_body off;
+        proxy_set_header Content-Length "";
+        proxy_set_header X-Auth-Client-ID $auth_client_id;
+        proxy_set_header X-Original-URI $request_uri;
+        proxy_pass http://auth_center/oauth/proxy/verify;
+    }
+
+    location = /__auth/logout {
+        proxy_pass http://auth_center/oauth/proxy/logout;
+    }
+
+    location = /__auth/health {
+        proxy_pass http://protected_app/healthz;
+    }
+
+    location / {
+        auth_request /__auth/verify;
+        error_page 401 =302 /__auth/start;
+
+        auth_request_set $auth_user $upstream_http_x_auth_user;
+        auth_request_set $auth_email $upstream_http_x_auth_email;
+        auth_request_set $auth_provider $upstream_http_x_auth_provider;
+        auth_request_set $auth_name $upstream_http_x_auth_name;
+
+        proxy_set_header X-Auth-User $auth_user;
+        proxy_set_header X-Auth-Email $auth_email;
+        proxy_set_header X-Auth-Provider $auth_provider;
+        proxy_set_header X-Auth-Name $auth_name;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header Host $host;
+        proxy_pass http://protected_app;
+    }
+}

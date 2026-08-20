@@ -243,6 +243,51 @@ curl -u docs:replace-me -X POST https://auth.example.com/oauth/token \
 
 生产客户端必须自行保存并验证 `state`，并在回调时确认它与发起请求时完全一致。
 
+## Nginx 一键接入
+
+对于不方便实现 OIDC callback 的传统 Web 应用，可以使用 `auth_request` 模式。模板位于：
+
+```text
+deploy/nginx/protected-site.conf.example
+```
+
+接入步骤：
+
+1. 在认证中心配置一个 client，`redirect_uris` 填业务域名的 `/__auth/callback`，例如 `https://app.example.com/__auth/callback`。
+2. 复制 Nginx 模板，替换认证中心地址、业务域名、证书路径、业务 upstream 和 `$auth_client_id`。
+3. 确认 Nginx 能访问认证中心，且业务 upstream 只监听回环地址或受信任网络。
+4. 执行 `nginx -t` 并 reload。
+
+```mermaid
+sequenceDiagram
+    participant U as 用户浏览器
+    participant N as 业务 Nginx
+    participant A as auth-center
+    participant P as GitHub / Google
+    participant B as 业务后端
+
+    U->>N: GET /private
+    N->>A: auth_request /oauth/proxy/verify
+    A-->>N: 401
+    N-->>U: 302 /__auth/start
+    U->>N: GET /__auth/start
+    N->>A: proxy start
+    A-->>U: 302 provider authorize
+    U->>P: 用户授权
+    P-->>A: provider callback
+    A->>A: 创建一次性 proxy ticket
+    A-->>N: 302 /__auth/callback?code&state
+    N->>A: proxy complete
+    A-->>N: Set-Cookie + 302 原始 URI
+    U->>N: GET /private + Cookie
+    N->>A: auth_request verify
+    A-->>N: 200 + X-Auth-* headers
+    N->>B: 转发可信用户头
+    B-->>U: 业务响应
+```
+
+模板会覆盖客户端传入的 `X-Auth-*` 头，并只从认证中心 verify 子请求读取身份信息。业务应用无需处理 OAuth code 或 refresh token。
+
 ## 配置说明
 
 最小配置示例：
@@ -309,6 +354,10 @@ policies:
 | `GET` | `/.well-known/openid-configuration` | OIDC Provider 元数据 |
 | `GET` | `/oauth/authorize` | 启动第三方登录和授权码流程 |
 | `GET` | `/oauth/callback/{provider}` | 接收 GitHub / Google 回调 |
+| `GET` | `/oauth/proxy/start` | 启动 Nginx 一键登录 |
+| `GET` | `/oauth/proxy/complete` | 消费 Nginx proxy ticket 并建立站点会话 |
+| `GET` | `/oauth/proxy/verify` | Nginx `auth_request` 验证站点会话 |
+| `GET` | `/oauth/proxy/logout` | 注销 Nginx 站点会话 |
 | `POST` | `/oauth/token` | 使用 authorization code 换取 token |
 | `GET` | `/userinfo` | 获取当前 Bearer token 对应的用户资料 |
 | `POST` | `/oauth/introspect` | 检查 token 是否有效 |

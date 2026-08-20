@@ -31,7 +31,21 @@ type authCode struct {
 	User                                                               provider.User
 	Exp                                                                time.Time
 }
-type authState struct{ ClientID, RedirectURI, State, Nonce, Challenge string }
+type authState struct {
+	ClientID, RedirectURI, State, Nonce, Challenge, ReturnURI string
+	Proxy                                                     bool
+}
+type proxyTicket struct {
+	ClientID, UserID string
+	User             provider.User
+	ReturnURI        string
+	Exp              time.Time
+}
+type proxySession struct {
+	ClientID, UserID string
+	User             provider.User
+	Exp, IssuedAt    time.Time
+}
 type token struct {
 	Access   string
 	User     provider.User
@@ -127,6 +141,10 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("/.well-known/openid-configuration", s.discovery)
 	m.HandleFunc("/oauth/authorize", s.authorize)
 	m.HandleFunc("/oauth/callback/", s.callback)
+	m.HandleFunc("/oauth/proxy/start", s.proxyStart)
+	m.HandleFunc("/oauth/proxy/complete", s.proxyComplete)
+	m.HandleFunc("/oauth/proxy/verify", s.proxyVerify)
+	m.HandleFunc("/oauth/proxy/logout", s.proxyLogout)
 	m.HandleFunc("/oauth/token", s.token)
 	m.HandleFunc("/oauth/revoke", s.revoke)
 	m.HandleFunc("/oauth/session/revoke-all", s.revokeAll)
@@ -193,6 +211,36 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request) {
 	target.RawQuery = query.Encode()
 	http.Redirect(w, r, target.String(), 302)
 }
+func (s *Server) proxyStart(w http.ResponseWriter, r *http.Request) {
+	clientID := strings.TrimSpace(r.Header.Get("X-Auth-Client-ID"))
+	callback := strings.TrimSpace(r.Header.Get("X-Auth-Callback-URI"))
+	returnURI := r.Header.Get("X-Auth-Return-URI")
+	c, ok := s.clients[clientID]
+	if !ok || !contains(c.RedirectURIs, callback) || !safeReturnURI(returnURI) {
+		http.Error(w, "invalid proxy configuration", 400)
+		return
+	}
+	p := r.URL.Query().Get("provider")
+	if p == "" {
+		p = firstProvider(s.providers)
+	}
+	pr, ok := s.providers[p]
+	if !ok {
+		http.Error(w, "unknown provider", 400)
+		return
+	}
+	nonce := random()
+	state := random()
+	b, _ := json.Marshal(authState{ClientID: clientID, RedirectURI: callback, State: state, Nonce: nonce, Proxy: true, ReturnURI: returnURI})
+	encoded := s.signState(base64.RawURLEncoding.EncodeToString(b))
+	target, _ := url.Parse(pr.AuthorizeURL(encoded, nonce, ""))
+	q := target.Query()
+	q.Set("redirect_uri", s.cfg.Issuer+"/oauth/callback/"+url.PathEscape(p))
+	q.Set("nonce", nonce)
+	target.RawQuery = q.Encode()
+	http.Redirect(w, r, target.String(), 302)
+}
+
 func (s *Server) callback(w http.ResponseWriter, r *http.Request) {
 	p := strings.TrimPrefix(r.URL.Path, "/oauth/callback/")
 	pr, ok := s.providers[p]
@@ -252,6 +300,20 @@ func (s *Server) callback(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.logger.Info("audit", "event", "login_succeeded", "provider", p, "client_id", as.ClientID, "user_id", usr.ID)
+	if as.Proxy {
+		ticket := random()
+		if e := s.st.Set(r.Context(), "proxy-ticket:"+ticket, proxyTicket{ClientID: as.ClientID, UserID: usr.ID, User: u, ReturnURI: as.ReturnURI, Exp: time.Now().Add(time.Minute)}, time.Minute); e != nil {
+			http.Error(w, "unable to save proxy ticket", 503)
+			return
+		}
+		target, _ := url.Parse(as.RedirectURI)
+		q := target.Query()
+		q.Set("code", ticket)
+		q.Set("state", r.URL.Query().Get("state"))
+		target.RawQuery = q.Encode()
+		http.Redirect(w, r, target.String(), 302)
+		return
+	}
 	id := random()
 	if e := s.st.Set(r.Context(), "code:"+id, authCode{ClientID: as.ClientID, RedirectURI: as.RedirectURI, Provider: p, Subject: u.Subject, UserID: usr.ID, User: u, Nonce: as.Nonce, Challenge: as.Challenge, Exp: time.Now().Add(s.cfg.CodeTTL)}, s.cfg.CodeTTL); e != nil {
 		http.Error(w, "unable to save authorization code", 503)
@@ -263,6 +325,58 @@ func (s *Server) callback(w http.ResponseWriter, r *http.Request) {
 	q.Set("state", as.State)
 	target.RawQuery = q.Encode()
 	http.Redirect(w, r, target.String(), 302)
+}
+func (s *Server) proxyComplete(w http.ResponseWriter, r *http.Request) {
+	stateValue, valid := s.verifyState(r.URL.Query().Get("state"))
+	var as authState
+	b, e := base64.RawURLEncoding.DecodeString(stateValue)
+	if !valid || e != nil || json.Unmarshal(b, &as) != nil || !as.Proxy {
+		http.Error(w, "invalid proxy state", 400)
+		return
+	}
+	var ticket proxyTicket
+	if e = s.st.Consume(r.Context(), "proxy-ticket:"+r.URL.Query().Get("code"), &ticket); e != nil || ticket.ClientID != as.ClientID {
+		http.Error(w, "invalid proxy ticket", 400)
+		return
+	}
+	sid := random()
+	if e = s.st.Set(r.Context(), "proxy-session:"+sid, proxySession{ClientID: ticket.ClientID, UserID: ticket.UserID, User: ticket.User, Exp: time.Now().Add(12 * time.Hour), IssuedAt: time.Now().UTC()}, 12*time.Hour); e != nil {
+		http.Error(w, "unable to save proxy session", 503)
+		return
+	}
+	http.SetCookie(w, &http.Cookie{Name: "__Host-auth_center_session", Value: sid, Path: "/", MaxAge: 12 * 60 * 60, Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode})
+	http.Redirect(w, r, ticket.ReturnURI, 302)
+}
+func (s *Server) proxyVerify(w http.ResponseWriter, r *http.Request) {
+	c, err := r.Cookie("__Host-auth_center_session")
+	if err != nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	var sess proxySession
+	if e := s.st.Get(r.Context(), "proxy-session:"+c.Value, &sess); e != nil || time.Now().After(sess.Exp) || sess.ClientID != strings.TrimSpace(r.Header.Get("X-Auth-Client-ID")) {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	var u identity.User
+	if e := s.st.Get(r.Context(), "user:"+sess.UserID, &u); e == nil && (u.Disabled || (!u.RevokedBefore.IsZero() && !sess.IssuedAt.After(u.RevokedBefore))) {
+		w.WriteHeader(http.StatusForbidden)
+		return
+	}
+	w.Header().Set("X-Auth-User", sess.UserID)
+	w.Header().Set("X-Auth-Email", sess.User.Email)
+	if providerName, ok := sess.User.Claims["provider"].(string); ok {
+		w.Header().Set("X-Auth-Provider", providerName)
+	}
+	w.Header().Set("X-Auth-Name", sess.User.Name)
+	w.WriteHeader(http.StatusOK)
+}
+func (s *Server) proxyLogout(w http.ResponseWriter, r *http.Request) {
+	if c, e := r.Cookie("__Host-auth_center_session"); e == nil {
+		_ = s.st.Delete(r.Context(), "proxy-session:"+c.Value)
+	}
+	http.SetCookie(w, &http.Cookie{Name: "__Host-auth_center_session", Value: "", Path: "/", MaxAge: -1, Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode})
+	w.WriteHeader(http.StatusNoContent)
 }
 func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 	_ = r.ParseForm()
@@ -535,6 +649,14 @@ func contains(xs []string, v string) bool {
 		}
 	}
 	return false
+}
+
+func safeReturnURI(value string) bool {
+	if value == "" || !strings.HasPrefix(value, "/") || strings.HasPrefix(value, "//") || strings.ContainsAny(value, "\r\n") {
+		return false
+	}
+	u, e := url.ParseRequestURI(value)
+	return e == nil && !u.IsAbs() && u.Host == ""
 }
 
 var _ = context.Background
